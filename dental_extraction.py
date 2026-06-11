@@ -244,12 +244,10 @@ class DentalExtractor:
 # ──────────────────────────────────────────────
 
 def create_sample_dental_stl(path: str = None):
+    """テスト用：円弧状に並んだ円柱（歯に見立て）のSTLを生成"""
     if path is None:
         import tempfile, os
         path = os.path.join(tempfile.gettempdir(), "sample_teeth.stl")
-    """
-    テスト用：円弧状に並んだ円柱（歯に見立て）のSTLを生成
-    """
     import trimesh.creation as tc
 
     arches = []
