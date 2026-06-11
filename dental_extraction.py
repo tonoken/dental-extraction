@@ -58,42 +58,56 @@ def is_single_shell(mesh: trimesh.Trimesh) -> bool:
 def segment_geodesic_voronoi(mesh: trimesh.Trimesh, n_teeth: int = 14) -> list[np.ndarray]:
     """
     1シェル歯列スキャン用セグメンテーション。
-    PCAで分割方向を求めながら再帰的に二分割することで
-    歯列アーチに沿った均等なn_teeth本のセグメントを生成する。
+    1. XY重心をKMeansでn_teeth本にクラスタリング
+    2. 各クラスタ内でZ最小のフェイスをシード（歯先はZ最小側）
+    3. マルチソースBFSでGeodesic Voronoi分割
     """
-    print(f"再帰的二分割で {n_teeth} 本に分割中...")
-    all_faces = np.arange(len(mesh.faces), dtype=np.int32)
-    segments = _recursive_bisect(mesh, all_faces, n_teeth)
+    from sklearn.cluster import KMeans
+
+    face_centroids = mesh.vertices[mesh.faces].mean(axis=1)
+    face_z = face_centroids[:, 2]
+    adj_pairs = mesh.face_adjacency
+
+    # Step 1: XY KMeans
+    print(f"KMeansで {n_teeth} 本に分類中...")
+    km = KMeans(n_clusters=n_teeth, random_state=42, n_init=10)
+    km.fit(face_centroids[:, :2])
+
+    # Step 2: 各クラスタのZ最小点をシード（歯先はZ最小側）
+    seeds = []
+    for i in range(n_teeth):
+        cluster = np.where(km.labels_ == i)[0]
+        if len(cluster) == 0:
+            continue
+        seeds.append(cluster[face_z[cluster].argmin()])
+    seeds = np.array(seeds)
+    print(f"シード: {len(seeds)} 個（Z最低点=歯先）")
+
+    # Step 3: 隣接リスト構築 → マルチソースBFS
+    print("Geodesic Voronoi分割中...")
+    adj_list: list[list[int]] = [[] for _ in range(len(mesh.faces))]
+    for a, b in adj_pairs:
+        adj_list[a].append(b)
+        adj_list[b].append(a)
+
+    labels = -np.ones(len(mesh.faces), dtype=np.int32)
+    q: deque = deque()
+    for i, seed in enumerate(seeds):
+        labels[seed] = i
+        q.append((seed, i))
+
+    while q:
+        face, label = q.popleft()
+        for nb in adj_list[face]:
+            if labels[nb] == -1:
+                labels[nb] = label
+                q.append((nb, label))
+
+    n_labels = len(seeds)
+    segments = [np.where(labels == i)[0] for i in range(n_labels)]
     sizes = [len(s) for s in segments]
-    print(f"セグメント完了: {len(segments)} 本  (最小 {min(sizes):,} 面 / 最大 {max(sizes):,} 面)")
+    print(f"セグメント完了: {n_labels} 本  (最小 {min(sizes):,} 面 / 最大 {max(sizes):,} 面)")
     return segments
-
-
-def _recursive_bisect(mesh: trimesh.Trimesh, face_ids: np.ndarray, n: int) -> list[np.ndarray]:
-    """PCA方向に沿って再帰的にフェイス群を二分割する"""
-    if n <= 1 or len(face_ids) < 10:
-        return [face_ids]
-
-    centroids = mesh.vertices[mesh.faces[face_ids]].mean(axis=1)
-
-    # XY平面のPCA主成分方向に射影して中央値で分割
-    xy = centroids[:, :2]
-    xy_centered = xy - xy.mean(axis=0)
-    cov = xy_centered.T @ xy_centered
-    _, vecs = np.linalg.eigh(cov)
-    principal = vecs[:, -1]          # 最大固有値方向
-    proj = xy_centered @ principal
-
-    median = np.median(proj)
-    left_mask = proj <= median
-    left_ids  = face_ids[left_mask]
-    right_ids = face_ids[~left_mask]
-
-    n_left  = n // 2
-    n_right = n - n_left
-
-    return (_recursive_bisect(mesh, left_ids,  n_left) +
-            _recursive_bisect(mesh, right_ids, n_right))
 
 
 # ──────────────────────────────────────────────
