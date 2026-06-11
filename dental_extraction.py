@@ -41,24 +41,41 @@ def load_stl(path: str) -> trimesh.Trimesh:
     return mesh
 
 
-def segment_teeth(mesh: trimesh.Trimesh, n_teeth: int = 32) -> list[np.ndarray]:
+def segment_teeth(mesh: trimesh.Trimesh, n_teeth: int = 14) -> list[np.ndarray]:
     """
-    簡易セグメンテーション：
-    X軸（左右）・Y軸（前後）でクラスタリングして歯を分割する。
-    本格的な歯列モデルにはカスタム調整が必要。
+    歯のセグメンテーション。
+    複数シェルなら各コンポーネントをそのまま歯として扱い、
+    1シェル（結合メッシュ）ならKMeansでXY平面クラスタリングする。
     """
     components = trimesh.graph.connected_components(mesh.face_adjacency, min_len=50)
-    if len(components) < 2:
-        # 1ピースの場合はX座標でスライス分割
-        return _slice_by_x(mesh, n_teeth)
+    if len(components) >= 2:
+        print(f"検出されたコンポーネント数: {len(components)}")
+        return [np.array(c) for c in components]
 
-    # 複数コンポーネントがあればそのまま歯として扱う
-    print(f"検出されたコンポーネント数: {len(components)}")
-    return [np.array(c) for c in components]
+    # 1シェルの場合はKMeansで分割
+    print(f"1シェルメッシュ: KMeansで {n_teeth} 本に分割します...")
+    return _segment_by_kmeans(mesh, n_teeth)
+
+
+def _segment_by_kmeans(mesh: trimesh.Trimesh, n: int) -> list[np.ndarray]:
+    """
+    XY平面上のフェイス重心をKMeansクラスタリングして歯を分割。
+    1シェルの歯列スキャンに対応。
+    """
+    try:
+        from sklearn.cluster import KMeans
+    except ImportError:
+        print("scikit-learn が必要です: pip install scikit-learn")
+        return _slice_by_x(mesh, n)
+
+    face_centroids = mesh.vertices[mesh.faces].mean(axis=1)
+    kmeans = KMeans(n_clusters=n, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(face_centroids[:, :2])
+    return [np.where(labels == i)[0] for i in range(n)]
 
 
 def _slice_by_x(mesh: trimesh.Trimesh, n: int) -> list[np.ndarray]:
-    """X座標でn等分してフェイスをグループ化"""
+    """X座標でn等分してフェイスをグループ化（フォールバック）"""
     face_cx = mesh.vertices[mesh.faces].mean(axis=1)[:, 0]
     bins = np.linspace(face_cx.min(), face_cx.max(), n + 1)
     groups = []
@@ -87,12 +104,12 @@ class DentalExtractor:
     SELECTED_COLOR = "tomato"
     REMOVED_COLOR  = "gray"   # Undo表示用（実際には非表示）
 
-    def __init__(self, stl_path: str):
+    def __init__(self, stl_path: str, n_teeth: int = 14):
         self.stl_path = Path(stl_path)
         self.mesh = load_stl(stl_path)
         print(f"STL読み込み完了: {self.mesh.faces.shape[0]} 面, {self.mesh.vertices.shape[0]} 頂点")
 
-        self.tooth_faces: list[np.ndarray] = segment_teeth(self.mesh)
+        self.tooth_faces: list[np.ndarray] = segment_teeth(self.mesh, n_teeth)
         print(f"歯のセグメント数: {len(self.tooth_faces)}")
 
         self.removed: list[int] = []          # 削除済みインデックス
@@ -279,11 +296,17 @@ def create_sample_dental_stl(path: str = None):
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    import argparse
+    parser = argparse.ArgumentParser(description="歯列STL 抜歯ツール")
+    parser.add_argument("stl", nargs="?", help="STLファイルパス（省略時はサンプルデータ）")
+    parser.add_argument("--teeth", type=int, default=14, help="分割する歯の本数（1シェル時。デフォルト: 14）")
+    args = parser.parse_args()
+
+    if args.stl is None:
         print("STLファイルが指定されていないため、サンプルデータを使用します。")
         stl_path = create_sample_dental_stl()
     else:
-        stl_path = sys.argv[1]
+        stl_path = args.stl
 
-    extractor = DentalExtractor(stl_path)
+    extractor = DentalExtractor(stl_path, n_teeth=args.teeth)
     extractor.run()
