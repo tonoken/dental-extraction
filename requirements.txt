@@ -1,0 +1,5 @@
+numpy
+trimesh
+vedo
+networkx
+scikit-learn
